@@ -171,7 +171,17 @@ In my paper, I always use `colmap.sh` to generate dense point clouds and downsam
 
 Here are some codes maybe useful but never adopted in my paper, you can also try it.
 
+## Citation
+
+```
+@inproceedings{huang2024,
+  author = {Zixiong, Huang and Qi, Chen and Libo, Sun and Yifan, Yang and Naizhou, Wang and Mingkui, Tan and Qi, Wu},
+  title = {G-NeRF: Geometry-enhanced Novel View Synthesis from Single-View Images},
+  booktitle = {CVPR},
+  year = {2024}
+}
+```
 
 ## Acknowledgement
 
-We would like to express our sincere gratitude to [@zhouzhenghong-gt](https://github.com/zhouzhenghong-gt/) for his revisions to our code and discussions on the content of our paper.
+ Our code is modified from [EG3D](https://github.com/NVlabs/eg3d/tree/main). Thanks for their awesome work!
