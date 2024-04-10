@@ -1,4 +1,4 @@
-name: eg3d
+name: gnerf
 channels:
   - pytorch
   - nvidia
@@ -25,3 +25,5 @@ dependencies:
     - psutil
     - mrcfile
     - tensorboard
+    - opencv-python
+    - torchvision

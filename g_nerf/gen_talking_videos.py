@@ -118,11 +118,6 @@ def generate_talking_videos(
     gt_images_low = cv2.resize(gt_images, (int(gt_images.shape[1] / scale), res), interpolation=cv2.INTER_AREA)
     id_images = (torch.from_numpy(id_images).to(device) / 127.5) - 1
 
-    with open(label_path, 'r') as f:
-        labels = json.load(f)
-    keys = list(labels.keys())
-    random.shuffle(keys)
-
     # load encoders and generator
     print('Loading networks from "%s"...' % network_pkl)
     with dnnlib.util.open_url(network_pkl) as f:
@@ -133,9 +128,8 @@ def generate_talking_videos(
     G.rendering_kwargs['depth_resolution_importance'] = int(G.rendering_kwargs['depth_resolution_importance'] * 2)
 
     # get id feature
-    start_time = time.time()
     id_feature = id_eder(id_images)
-    print(f"encoding time: {time.time() - start_time}")
+
     # create camera intrinsics
     if dataset == 'ffhq' or dataset == 'celeba':
         intrinsics = torch.tensor([[4.2647, 0, 0.5], [0, 4.2647, 0.5], [0, 0, 1]], device=device)
@@ -154,24 +148,22 @@ def generate_talking_videos(
     c_s = torch.cat([cam2world_pose_s.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
     c_s = c_s.repeat(id_feature.shape[0], 1)
     ws = G.mapping(z=id_feature, c=torch.zeros_like(c_s))
-    frame_num = 11
-    sum_time = 0
-    start_time = time.time()
+    frame_num = 120
 
 
     for i in tqdm(range(0, frame_num)):
         pitch_range = math.pi/4
         yaw_range = math.pi/4
-        # pitch = 0.35 * np.cos(i / (frame_num-1) * 2 * math.pi) + math.pi/2
+        
+        pitch = 0.35 * np.cos(i / (frame_num-1) * 2 * math.pi) + math.pi/2
         pitch = math.pi/2
         # yaw [0.3*pi, 0.7*pi]
-        yaw = math.pi/4 + 0.5 * i / (frame_num-1)  * math.pi
+        yaw = 3.14/2 + yaw_range * np.sin(2 * 3.14 * i / (frame_num-1))
         # yaw = 0.55 * math.pi * i / (frame_num-1)
         cam2world_pose_d = LookAtPoseSampler.sample(yaw, pitch, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
         if dataset == 'shapenet':
             yaw_range = math.pi*2
             yaw = yaw_range * i / (frame_num -1)
-            print(i / (frame_num -1))
             pitch_range = math.pi/4
             pitch = math.pi/3
             if 'cars' in id_image:
@@ -179,18 +171,10 @@ def generate_talking_videos(
             else:
                 radius = 2.0
             cam2world_pose_d = LookAtPoseSampler.sample_srn(yaw, pitch, radius=radius, device=device)
+    
         c_d = torch.cat([cam2world_pose_d.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1).repeat(id_feature.shape[0], 1)
-        start = time.time()
-        # if dataset == 'shapenet':
-        #     label_key = id_image.split('/')[-3] + '/' + id_image.split('/')[-2] + '/' + id_image.split('/')[-1]
-        #     c_d = torch.tensor(labels[label_key], device=device).unsqueeze(0)
-        #     breakpoint()
-        # id_feature = id_eder(id_images)
-        # ws = G.mapping(z=id_feature, c=torch.zeros_like(c_s))
-        # print(ws.shape)
         output = G.synthesis(ws=ws, c=c_d, noise_mode='const', neural_rendering_resolution=res)
-        current_time = time.time()
-        sum_time += current_time - start
+
         img = (output['image'] * 127.5 + 128).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
         img_raw = (output['image_raw'] * 127.5 + 128).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
         img = flat_batch(img)
@@ -206,10 +190,7 @@ def generate_talking_videos(
         out_img_path = os.path.join(outdir, dir_name ,str(i) + '.png')
         if os.path.exists(os.path.dirname(out_img_path)) == False:
             os.makedirs(os.path.dirname(out_img_path))
-        cv2.imwrite(out_img_path.replace('.png', '_64_.png'), cv2.cvtColor(img_raw, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(out_img_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-    print(f"avg inference time: {sum_time / frame_num}")
-    print(f"total time: {time.time() - start_time}, sum_time: {sum_time}")
+
     if gen_shapes:
         voxel_resolution=512
         max_batch = 10000000
