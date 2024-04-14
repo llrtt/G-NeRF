@@ -44,6 +44,13 @@ Coming Soon
 ## Citation
 
 ```
+@article{huang2024g,
+  title={G-NeRF: Geometry-enhanced Novel View Synthesis from Single-View Images},
+  author={Huang, Zixiong and Chen, Qi and Sun, Libo and Yang, Yifan and Wang, Naizhou and Tan, Mingkui and Wu, Qi},
+  journal={arXiv preprint arXiv:2404.07474},
+  year={2024}
+}
+
 @inproceedings{huang2024g,
   author = {Zixiong, Huang and Qi, Chen and Libo, Sun and Yifan, Yang and Naizhou, Wang and Mingkui, Tan and Qi, Wu},
   title = {G-NeRF: Geometry-enhanced Novel View Synthesis from Single-View Images},
