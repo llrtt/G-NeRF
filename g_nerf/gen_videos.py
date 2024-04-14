@@ -1,33 +1,18 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
-"""Generate lerp videos using pretrained network pickle."""
-
 import os
-import re
-from typing import List, Optional, Tuple, Union
-
+import cv2
+import json
 import click
 import dnnlib
 import imageio
 import numpy as np
-import scipy.interpolate
 import torch
 from tqdm import tqdm
-import mrcfile
-
+import math
 import legacy
-
+import time
+import mrcfile
 from camera_utils import LookAtPoseSampler
-from torch_utils import misc
-#----------------------------------------------------------------------------
+import random
 
 def layout_grid(img, grid_w=None, grid_h=1, float_to_uint8=True, chw_to_hwc=True, to_numpy=True):
     batch_size, channels, img_h, img_w = img.shape
@@ -69,263 +54,179 @@ def create_samples(N=256, voxel_origin=[0, 0, 0], cube_length=2.0):
 
     return samples.unsqueeze(0), voxel_origin, voxel_size
 
-#----------------------------------------------------------------------------
+def flat_batch(batch_image):
+    flatten_image = [i for i in batch_image]
+    return np.concatenate(flatten_image, axis=1)
 
-def gen_interp_video(G, mp4: str, seeds, shuffle_seed=None, w_frames=60*4, kind='cubic', grid_dims=(1,1), num_keyframes=None, wraps=2, psi=1, truncation_cutoff=14, cfg='FFHQ', image_mode='image', gen_shapes=False, device=torch.device('cuda'), **video_kwargs):
-    grid_w = grid_dims[0]
-    grid_h = grid_dims[1]
+def normalize_depth(depth, range):
+    hi, lo = range
+    depth = (depth - lo) * (255 / (hi - lo))
+    return depth.clamp(0, 255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
 
-    if num_keyframes is None:
-        if len(seeds) % (grid_w*grid_h) != 0:
-            raise ValueError('Number of input seeds must be divisible by grid W*H')
-        num_keyframes = len(seeds) // (grid_w*grid_h)
-
-    all_seeds = np.zeros(num_keyframes*grid_h*grid_w, dtype=np.int64)
-    for idx in range(num_keyframes*grid_h*grid_w):
-        all_seeds[idx] = seeds[idx % len(seeds)]
-
-    if shuffle_seed is not None:
-        rng = np.random.RandomState(seed=shuffle_seed)
-        rng.shuffle(all_seeds)
-
-    camera_lookat_point = torch.tensor(G.rendering_kwargs['avg_camera_pivot'], device=device)
-    zs = torch.from_numpy(np.stack([np.random.RandomState(seed).randn(G.z_dim) for seed in all_seeds])).to(device)
-    cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, camera_lookat_point, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
-    focal_length = 4.2647 if cfg != 'Shapenet' else 1.7074 # shapenet has higher FOV
-    intrinsics = torch.tensor([[focal_length, 0, 0.5], [0, focal_length, 0.5], [0, 0, 1]], device=device)
-    c = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
-    c = c.repeat(len(zs), 1)
-    ws = G.mapping(z=zs, c=c, truncation_psi=psi, truncation_cutoff=truncation_cutoff)
-    _ = G.synthesis(ws[:1], c[:1]) # warm up
-    ws = ws.reshape(grid_h, grid_w, num_keyframes, *ws.shape[1:])
-
-    # Interpolation.
-    grid = []
-    for yi in range(grid_h):
-        row = []
-        for xi in range(grid_w):
-            x = np.arange(-num_keyframes * wraps, num_keyframes * (wraps + 1))
-            y = np.tile(ws[yi][xi].cpu().numpy(), [wraps * 2 + 1, 1, 1])
-            interp = scipy.interpolate.interp1d(x, y, kind=kind, axis=0)
-            row.append(interp)
-        grid.append(row)
-
-    # Render video.
-    max_batch = 10000000
-    voxel_resolution = 512
-    video_out = imageio.get_writer(mp4, mode='I', fps=60, codec='libx264', **video_kwargs)
-
-    if gen_shapes:
-        outdir = 'interpolation_{}_{}/'.format(all_seeds[0], all_seeds[1])
-        os.makedirs(outdir, exist_ok=True)
-    all_poses = []
-    for frame_idx in tqdm(range(num_keyframes * w_frames)):
-        imgs = []
-        for yi in range(grid_h):
-            for xi in range(grid_w):
-                pitch_range = 0.25
-                yaw_range = 0.35
-                cam2world_pose = LookAtPoseSampler.sample(3.14/2 + yaw_range * np.sin(2 * 3.14 * frame_idx / (num_keyframes * w_frames)),
-                                                        3.14/2 -0.05 + pitch_range * np.cos(2 * 3.14 * frame_idx / (num_keyframes * w_frames)),
-                                                        camera_lookat_point, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
-                all_poses.append(cam2world_pose.squeeze().cpu().numpy())
-                focal_length = 4.2647 if cfg != 'Shapenet' else 1.7074 # shapenet has higher FOV
-                intrinsics = torch.tensor([[focal_length, 0, 0.5], [0, focal_length, 0.5], [0, 0, 1]], device=device)
-                c = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
-
-                interp = grid[yi][xi]
-                w = torch.from_numpy(interp(frame_idx / w_frames)).to(device)
-
-                entangle = 'camera'
-                if entangle == 'conditioning':
-                    c_forward = torch.cat([LookAtPoseSampler.sample(3.14/2,
-                                                                    3.14/2,
-                                                                    camera_lookat_point,
-                                                                    radius=G.rendering_kwargs['avg_camera_radius'], device=device).reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
-                    w_c = G.mapping(z=zs[0:1], c=c[0:1], truncation_psi=psi, truncation_cutoff=truncation_cutoff)
-                    img = G.synthesis(ws=w_c, c=c_forward, noise_mode='const')[image_mode][0]
-                elif entangle == 'camera':
-                    img = G.synthesis(ws=w.unsqueeze(0), c=c[0:1], noise_mode='const')[image_mode][0]
-                elif entangle == 'both':
-                    w_c = G.mapping(z=zs[0:1], c=c[0:1], truncation_psi=psi, truncation_cutoff=truncation_cutoff)
-                    img = G.synthesis(ws=w_c, c=c[0:1], noise_mode='const')[image_mode][0]
-
-                if image_mode == 'image_depth':
-                    img = -img
-                    img = (img - img.min()) / (img.max() - img.min()) * 2 - 1
-
-                imgs.append(img)
-
-                if gen_shapes:
-                    # generate shapes
-                    print('Generating shape for frame %d / %d ...' % (frame_idx, num_keyframes * w_frames))
-
-                    samples, voxel_origin, voxel_size = create_samples(N=voxel_resolution, voxel_origin=[0, 0, 0], cube_length=G.rendering_kwargs['box_warp'])
-                    samples = samples.to(device)
-                    sigmas = torch.zeros((samples.shape[0], samples.shape[1], 1), device=device)
-                    transformed_ray_directions_expanded = torch.zeros((samples.shape[0], max_batch, 3), device=device)
-                    transformed_ray_directions_expanded[..., -1] = -1
-
-                    head = 0
-                    with tqdm(total = samples.shape[1]) as pbar:
-                        with torch.no_grad():
-                            while head < samples.shape[1]:
-                                torch.manual_seed(0)
-                                sigma = G.sample_mixed(samples[:, head:head+max_batch], transformed_ray_directions_expanded[:, :samples.shape[1]-head], w.unsqueeze(0), truncation_psi=psi, noise_mode='const')['sigma']
-                                sigmas[:, head:head+max_batch] = sigma
-                                head += max_batch
-                                pbar.update(max_batch)
-
-                    sigmas = sigmas.reshape((voxel_resolution, voxel_resolution, voxel_resolution)).cpu().numpy()
-                    sigmas = np.flip(sigmas, 0)
-
-                    pad = int(30 * voxel_resolution / 256)
-                    pad_top = int(38 * voxel_resolution / 256)
-                    sigmas[:pad] = 0
-                    sigmas[-pad:] = 0
-                    sigmas[:, :pad] = 0
-                    sigmas[:, -pad_top:] = 0
-                    sigmas[:, :, :pad] = 0
-                    sigmas[:, :, -pad:] = 0
-
-                    output_ply = True
-                    if output_ply:
-                        from shape_utils import convert_sdf_samples_to_ply
-                        convert_sdf_samples_to_ply(np.transpose(sigmas, (2, 1, 0)), [0, 0, 0], 1, os.path.join(outdir, f'{frame_idx:04d}_shape.ply'), level=10)
-                    else: # output mrc
-                        with mrcfile.new_mmap(outdir + f'{frame_idx:04d}_shape.mrc', overwrite=True, shape=sigmas.shape, mrc_mode=2) as mrc:
-                            mrc.data[:] = sigmas
-
-        video_out.append_data(layout_grid(torch.stack(imgs), grid_w=grid_w, grid_h=grid_h))
-    video_out.close()
-    all_poses = np.stack(all_poses)
-
-    if gen_shapes:
-        print(all_poses.shape)
-        with open(mp4.replace('.mp4', '_trajectory.npy'), 'wb') as f:
-            np.save(f, all_poses)
-
-#----------------------------------------------------------------------------
-
-def parse_range(s: Union[str, List[int]]) -> List[int]:
-    '''Parse a comma separated list of numbers or ranges and return a list of ints.
-
-    Example: '1,2,5-10' returns [1, 2, 5, 6, 7]
-    '''
-    if isinstance(s, list): return s
-    ranges = []
-    range_re = re.compile(r'^(\d+)-(\d+)$')
-    for p in s.split(','):
-        if m := range_re.match(p):
-            ranges.extend(range(int(m.group(1)), int(m.group(2))+1))
-        else:
-            ranges.append(int(p))
-    return ranges
-
-#----------------------------------------------------------------------------
-
-def parse_tuple(s: Union[str, Tuple[int,int]]) -> Tuple[int, int]:
-    '''Parse a 'M,N' or 'MxN' integer tuple.
-
-    Example:
-        '4x2' returns (4,2)
-        '0,1' returns (0,1)
-    '''
-    if isinstance(s, tuple): return s
-    if m := re.match(r'^(\d+)[x,](\d+)$', s):
-        return (int(m.group(1)), int(m.group(2)))
-    raise ValueError(f'cannot parse tuple {s}')
+def angleToArc(angle):
+    return angle * math.pi / 180
 
 #----------------------------------------------------------------------------
 
 @click.command()
 @click.option('--network', 'network_pkl', help='Network pickle filename', required=True)
-@click.option('--seeds', type=parse_range, help='List of random seeds', required=True)
-@click.option('--shuffle-seed', type=int, help='Random seed to use for shuffling seed order', default=None)
-@click.option('--grid', type=parse_tuple, help='Grid width/height, e.g. \'4x3\' (default: 1x1)', default=(1,1))
-@click.option('--num-keyframes', type=int, help='Number of seeds to interpolate through.  If not specified, determine based on the length of the seeds array given by --seeds.', default=None)
-@click.option('--w-frames', type=int, help='Number of frames to interpolate between latents', default=120)
-@click.option('--trunc', 'truncation_psi', type=float, help='Truncation psi', default=1, show_default=True)
-@click.option('--trunc-cutoff', 'truncation_cutoff', type=int, help='Truncation cutoff', default=14, show_default=True)
-@click.option('--outdir', help='Output directory', type=str, required=True, metavar='DIR')
-@click.option('--reload_modules', help='Overload persistent modules?', type=bool, required=False, metavar='BOOL', default=False, show_default=True)
-@click.option('--cfg', help='Config', type=click.Choice(['FFHQ', 'AFHQ', 'Shapenet']), required=False, metavar='STR', default='FFHQ', show_default=True)
-@click.option('--image_mode', help='Image mode', type=click.Choice(['image', 'image_depth', 'image_raw']), required=False, metavar='STR', default='image', show_default=True)
-@click.option('--sample_mult', 'sampling_multiplier', type=float, help='Multiplier for depth sampling in volume rendering', default=2, show_default=True)
-@click.option('--nrr', type=int, help='Neural rendering resolution override', default=None, show_default=True)
-@click.option('--shapes', type=bool, help='Gen shapes for shape interpolation', default=False, show_default=True)
-@click.option('--interpolate', type=bool, help='Interpolate between seeds', default=True, show_default=True)
-
-def generate_images(
+@click.option('--prepared', 'prepared', help='whether to use image prepared in a folder')
+@click.option('--id_image', 'id_image', help='Identity reference', required=True)
+@click.option('--gen_shapes', 'gen_shapes', help='Generate mrcfile', type=bool, default=False,)
+@click.option('--id_encoder', help='id_encoder', default='checkpoint/network-snapshot-000720.pkl')
+@click.option('--gpu', type=int, help='gpu', default=0)
+@click.option('--video_out_path', help='Output directory', type=str, default='video_results/', metavar='DIR')
+@click.option('--outdir', help='Output directory', type=str, default='video_results/', metavar='DIR')
+@click.option('--label_path', help='label_path', type=str, required=False, metavar='DIR')
+@click.option('--res', help='Output directory', type=int, default=64, metavar='DIR')
+@click.option('--dataset', help='Output directory', type=str, default='ffhq', metavar='DIR')
+def generate_talking_videos(
     network_pkl: str,
-    seeds: List[int],
-    shuffle_seed: Optional[int],
-    truncation_psi: float,
-    truncation_cutoff: int,
-    grid: Tuple[int,int],
-    num_keyframes: Optional[int],
-    w_frames: int,
+    id_image: str,
+    id_encoder: str,
+    gpu: int, 
+    video_out_path: str,
     outdir: str,
-    reload_modules: bool,
-    cfg: str,
-    image_mode: str,
-    sampling_multiplier: float,
-    nrr: Optional[int],
-    shapes: bool,
-    interpolate: bool,
+    prepared: str,
+    res: int,
+    gen_shapes: bool,
+    label_path: str,
+    dataset: str,
 ):
-    """Render a latent vector interpolation video.
+    device = torch.device('cuda', gpu)
+    torch.cuda.set_device(device)
 
-    Examples:
-
-    \b
-    # Render a 4x2 grid of interpolations for seeds 0 through 31.
-    python gen_video.py --output=lerp.mp4 --trunc=1 --seeds=0-31 --grid=4x2 \\
-        --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-r-afhqv2-512x512.pkl
-
-    Animation length and seed keyframes:
-
-    The animation length is either determined based on the --seeds value or explicitly
-    specified using the --num-keyframes option.
-
-    When num keyframes is specified with --num-keyframes, the output video length
-    will be 'num_keyframes*w_frames' frames.
-
-    If --num-keyframes is not specified, the number of seeds given with
-    --seeds must be divisible by grid size W*H (--grid).  In this case the
-    output video length will be '# seeds/(w*h)*w_frames' frames.
-    """
-
-    if not os.path.exists(outdir):
-        os.makedirs(outdir, exist_ok=True)
-
-    print('Loading networks from "%s"...' % network_pkl)
-    device = torch.device('cuda')
-    with dnnlib.util.open_url(network_pkl) as f:
-        G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
-
-
-    G.rendering_kwargs['depth_resolution'] = int(G.rendering_kwargs['depth_resolution'] * sampling_multiplier)
-    G.rendering_kwargs['depth_resolution_importance'] = int(G.rendering_kwargs['depth_resolution_importance'] * sampling_multiplier)
-    if nrr is not None: G.neural_rendering_resolution = nrr
-
-    if truncation_cutoff == 0:
-        truncation_psi = 1.0 # truncation cutoff of 0 means no truncation anyways
-    if truncation_psi == 1.0:
-        truncation_cutoff = 14 # no truncation so doesn't matter where we cutoff
-
-    if interpolate:
-        output = os.path.join(outdir, 'interpolation.mp4')
-        gen_interp_video(G=G, mp4=output, bitrate='10M', grid_dims=grid, num_keyframes=num_keyframes, w_frames=w_frames, seeds=seeds, shuffle_seed=shuffle_seed, psi=truncation_psi, truncation_cutoff=truncation_cutoff, cfg=cfg, image_mode=image_mode, gen_shapes=shapes)
+    
+    if prepared is not None:
+        print('Loading image from "%s"...' % prepared)
+        id_images = []
+        id_images_path = os.listdir(prepared)
+        id_images_path = [os.path.join(prepared, id_image) for id_image in id_images_path if id_image.endswith('.jpg')]
+        for path in id_images_path:
+            tmp_image = cv2.imread(path)
+            tmp_image = cv2.cvtColor(tmp_image, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None, ...]
+            id_images.append(tmp_image)
+        id_images = np.concatenate(id_images, axis=0)
+        
     else:
-        for seed in seeds:
-            output = os.path.join(outdir, f'{seed}.mp4')
-            seeds_ = [seed]
-            gen_interp_video(G=G, mp4=output, bitrate='10M', grid_dims=grid, num_keyframes=num_keyframes, w_frames=w_frames, seeds=seeds_, shuffle_seed=shuffle_seed, psi=truncation_psi, truncation_cutoff=truncation_cutoff, cfg=cfg, image_mode=image_mode)
+        print('Loading image from "%s"...' % id_image)
+        id_images = cv2.imread(id_image)
+        id_images = cv2.cvtColor(id_images, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None, ...]
 
-#----------------------------------------------------------------------------
+    gt_images = np.concatenate([i.transpose(1,2,0) for i in id_images], axis=1)
+    scale = int(512 / res)
+    gt_images_low = cv2.resize(gt_images, (int(gt_images.shape[1] / scale), res), interpolation=cv2.INTER_AREA)
+    id_images = (torch.from_numpy(id_images).to(device) / 127.5) - 1
+
+    # load encoders and generator
+    print('Loading networks from "%s"...' % network_pkl)
+    with dnnlib.util.open_url(network_pkl) as f:
+        G = legacy.load_network_pkl(f)['G_ema'].to(device).eval() # type: ignore
+    with dnnlib.util.open_url(id_encoder) as f:
+        id_eder = legacy.load_network_pkl(f)['E'].to(device).eval() # type: ignore
+    G.rendering_kwargs['depth_resolution'] = int(G.rendering_kwargs['depth_resolution'] * 2)
+    G.rendering_kwargs['depth_resolution_importance'] = int(G.rendering_kwargs['depth_resolution_importance'] * 2)
+
+    # get id feature
+    id_feature = id_eder(id_images)
+
+    # create camera intrinsics
+    if dataset == 'ffhq' or dataset == 'celeba':
+        intrinsics = torch.tensor([[4.2647, 0, 0.5], [0, 4.2647, 0.5], [0, 0, 1]], device=device)
+    elif dataset == 'shapenet':
+        intrinsics = torch.tensor([[1.025390625, 0, 0.5], [0, 1.025390625, 0.5], [0, 0, 1]], device=device)
+
+    if prepared is None:
+        dir_name = os.path.basename(id_image).split('.')[0]
+    else:
+        dir_name = os.path.basename(prepared)
+    if not os.path.exists(video_out_path):
+        os.makedirs(video_out_path)
+    video_raw = imageio.get_writer(os.path.join(video_out_path, dir_name+'_raw'+'.mp4'), mode='I', fps=30, codec='libx264')
+    video_out = imageio.get_writer(os.path.join(video_out_path, dir_name+'.mp4'), mode='I', fps=30, codec='libx264')
+    cam2world_pose_s = LookAtPoseSampler.sample(3.14/2, 3.14/2, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
+    c_s = torch.cat([cam2world_pose_s.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+    c_s = c_s.repeat(id_feature.shape[0], 1)
+    ws = G.mapping(z=id_feature, c=torch.zeros_like(c_s))
+    frame_num = 120
+
+
+    for i in tqdm(range(0, frame_num)):
+        pitch_range = math.pi/4
+        yaw_range = math.pi/4
+        
+        pitch = 0.35 * np.cos(i / (frame_num-1) * 2 * math.pi) + math.pi/2
+        pitch = math.pi/2
+        # yaw [0.3*pi, 0.7*pi]
+        yaw = 3.14/2 + yaw_range * np.sin(2 * 3.14 * i / (frame_num-1))
+        # yaw = 0.55 * math.pi * i / (frame_num-1)
+        cam2world_pose_d = LookAtPoseSampler.sample(yaw, pitch, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
+        if dataset == 'shapenet':
+            yaw_range = math.pi*2
+            yaw = yaw_range * i / (frame_num -1)
+            pitch_range = math.pi/4
+            pitch = math.pi/3
+            if 'cars' in id_image:
+                radius = 1.3
+            else:
+                radius = 2.0
+            cam2world_pose_d = LookAtPoseSampler.sample_srn(yaw, pitch, radius=radius, device=device)
+    
+        c_d = torch.cat([cam2world_pose_d.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1).repeat(id_feature.shape[0], 1)
+        output = G.synthesis(ws=ws, c=c_d, noise_mode='const', neural_rendering_resolution=res)
+
+        img = (output['image'] * 127.5 + 128).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+        img_raw = (output['image_raw'] * 127.5 + 128).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+        img = flat_batch(img)
+        img_raw = flat_batch(img_raw)
+
+        img_depth = [normalize_depth(i, [i.max(), i.min()]) for i in -output['image_depth']]
+        img_depth = flat_batch(img_depth)
+        img_depth = cv2.cvtColor(img_depth, cv2.COLOR_GRAY2RGB)
+
+        video_out.append_data(img)
+        video_raw.append_data(img_raw)
+
+        out_img_path = os.path.join(outdir, dir_name ,str(i) + '.png')
+        if os.path.exists(os.path.dirname(out_img_path)) == False:
+            os.makedirs(os.path.dirname(out_img_path))
+
+    if gen_shapes:
+        voxel_resolution=512
+        max_batch = 10000000
+        # generate shapes
+        print('Generating shape')
+
+        samples, voxel_origin, voxel_size = create_samples(N=voxel_resolution, voxel_origin=[0, 0, 0], cube_length=G.rendering_kwargs['box_warp'])
+        samples = samples.to(device)
+        sigmas = torch.zeros((samples.shape[0], samples.shape[1], 1), device=device)
+        transformed_ray_directions_expanded = torch.zeros((samples.shape[0], max_batch, 3), device=device)
+        transformed_ray_directions_expanded[..., -1] = -1
+
+        head = 0
+        with tqdm(total = samples.shape[1]) as pbar:
+            with torch.no_grad():
+                while head < samples.shape[1]:
+                    torch.manual_seed(0)
+                    sigma = G.sample_mixed(samples[:, head:head+max_batch], transformed_ray_directions_expanded[:, :samples.shape[1]-head], ws, noise_mode='const')['sigma']
+                    sigmas[:, head:head+max_batch] = sigma
+                    head += max_batch
+                    pbar.update(max_batch)
+
+        sigmas = sigmas.reshape((voxel_resolution, voxel_resolution, voxel_resolution)).cpu().numpy()
+        sigmas = np.flip(sigmas, 0)
+
+        pad = int(30 * voxel_resolution / 256)
+        pad_top = int(38 * voxel_resolution / 256)
+        sigmas[:pad] = 0
+        sigmas[-pad:] = 0
+        sigmas[:, :pad] = 0
+        sigmas[:, -pad_top:] = 0
+        sigmas[:, :, :pad] = 0
+        sigmas[:, :, -pad:] = 0
+        out_img_path = os.path.join(outdir, dir_name ,str(i) + '.png')
+        with mrcfile.new_mmap(out_img_path.replace('png', 'mrc'), overwrite=True, shape=sigmas.shape, mrc_mode=2) as mrc:
+            mrc.data[:] = sigmas
 
 if __name__ == "__main__":
-    generate_images() # pylint: disable=no-value-for-parameter
-
-#----------------------------------------------------------------------------
+    generate_talking_videos()

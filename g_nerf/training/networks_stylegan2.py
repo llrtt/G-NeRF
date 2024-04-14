@@ -14,13 +14,12 @@ Matches the original implementation of configs E-F by Karras et al. at
 https://github.com/NVlabs/stylegan2/blob/master/training/networks_stylegan2.py"""
 
 import sys
-sys.path.append('./talkingnerf')
+sys.path.append('./g_nerf')
 import numpy as np
 import torch.nn as nn
 import torch
 from training.base_network import BaseNetwork
 from training.audio_network import ResNetSE, SEBasicBlock
-from training.FAN_feature_extractor import FAN_use
 import torch.nn.functional as F
 from torch_utils import misc
 from torch_utils import persistence
@@ -839,64 +838,6 @@ class ResNeXt50(BaseNetwork):
         return net
 
 #----------------------------------------------------------------------------
-
-@persistence.persistent_class
-class ResSEAudioEncoder(BaseNetwork):
-    def __init__(self, nOut=512):
-        super().__init__()
-        self.nOut = nOut
-        # Number of filters
-        num_filters = [32, 64, 128, 256]
-        self.model = ResNetSE(SEBasicBlock, [3, 4, 6, 3], num_filters, self.nOut, n_mel_T=1)
-        self.fc = nn.Linear(self.nOut, 5830)
-
-    def forward_feature(self, x):
-
-        input_size = x.size()
-        if len(input_size) == 5:
-            bz, clip_len, c, f, t = input_size
-            x = x.view(bz * clip_len, c, f, t)
-        out = self.model(x)
-        audio_content_feature = out.view(-1, 1, out.shape[-1])
-        return audio_content_feature
-
-    def forward(self, x):
-        out = self.forward_feature(x)
-        score = self.fc(out)
-        return out, score
-
-#----------------------------------------------------------------------------
-
-@persistence.persistent_class
-class FanEncoder(BaseNetwork):
-    def __init__(self):
-        super().__init__()
-        pose_dim = 12
-        self.model = FAN_use()
-        self.classifier = nn.Sequential(nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 5830))
-
-        # mapper to mouth subspace
-        self.to_mouth = nn.Sequential(nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 512))
-        self.mouth_embed = nn.Sequential(nn.ReLU(), nn.Linear(512, 512-pose_dim))
-        self.mouth_fc = nn.Sequential(nn.ReLU(), nn.Linear(512, 5830))
-
-        # mapper to head pose subspace
-        self.to_headpose = nn.Sequential(nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 512))
-        self.headpose_embed = nn.Sequential(nn.ReLU(), nn.Linear(512, pose_dim))
-        self.headpose_fc = nn.Sequential(nn.ReLU(), nn.Linear(pose_dim, 5830))
-
-    def forward_feature(self, x):
-        net = self.model(x)
-        net = net.view(-1, 1, net.shape[-1])
-        pose_code = self.to_headpose(net)
-        pose_code = self.headpose_embed(pose_code)
-        return pose_code
-
-    def forward(self, x):
-        x0 = x.view(-1, 3, 224, 224)
-        net = self.forward_feature(x0)
-        scores = self.classifier(net.view(-1, 1, 512).mean(1))
-        return net, scores
 
 if __name__ == '__main__':
     print("hello")

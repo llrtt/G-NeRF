@@ -2,7 +2,7 @@
 Zixiong Huang*, Qi Chen*, Libo Sun, Yifan Yang, Naizhou Wang, Mingkui Tan, Qi Wu
 
 ![architecture](figure/overallarchitecture.png)
-### [Project Page](https://llrtt.github.io/G-NeRF.gitHub.io/)| [arXiv Paper](https://arxiv.org/abs/2310.08528)
+### [Project Page](https://llrtt.github.io/G-NeRF-Demo/)| [arXiv Paper](https://arxiv.org/abs/2310.08528)
 
 ## Requirements
 
@@ -21,12 +21,12 @@ Download our pre-trained checkpoint from [huggingface](https://huggingface.co/ll
 ```.bash
 # Generate videos using pre-trained model
 
-python ./g_nerf/gen_talking_videos.py \
+python ./g_nerf/gen_videos.py \
 --network checkpoints/G-NeRF/network-G_ema-final.pkl \
 --id_encoder checkpoints/G-NeRF/network-E-final.pkl \
 --id_image samples/66667.jpg \
 --outdir results \
---video_out_path results \
+--video_out_path results
 ```
 
 
@@ -70,29 +70,6 @@ python train.py -s data/your-ns-data/colmap --port 6017 --expname "custom" --con
 ```
 You can customize your training config through the config files.
 
-## Checkpoint
-
-Also, you can training your model with checkpoint.
-
-```python
-python train.py -s data/dnerf/bouncingballs --port 6017 --expname "dnerf/bouncingballs" --configs arguments/dnerf/bouncingballs.py --checkpoint_iterations 200 # change it.
-```
-
-Then load checkpoint with:
-
-```python
-python train.py -s data/dnerf/bouncingballs --port 6017 --expname "dnerf/bouncingballs" --configs arguments/dnerf/bouncingballs.py --start_checkpoint "output/dnerf/bouncingballs/chkpnt_coarse_200.pth"
-# finestage: --start_checkpoint "output/dnerf/bouncingballs/chkpnt_fine_200.pth"
-```
-
-## Rendering
-
-Run the following script to render the images.
-
-```
-python render.py --model_path "output/dnerf/bouncingballs/"  --skip_train --configs arguments/dnerf/bouncingballs.py  &
-```
-
 ## Evaluation
 
 You can just run the following script to evaluate the model.
@@ -102,63 +79,14 @@ python metrics.py --model_path "output/dnerf/bouncingballs/"
 ```
 
 
-## Viewer
-[Watch me](./docs/viewer_usage.md)
-## Scripts
-
-There are some helpful scripts, please feel free to use them.
-
-`export_perframe_3DGS.py`:
-get all 3D Gaussians point clouds at each timestamps.
-
-usage:
-
-```python
-python export_perframe_3DGS.py --iteration 14000 --configs arguments/dnerf/lego.py --model_path output/dnerf/lego 
-```
-
-You will a set of 3D Gaussians are saved in `output/dnerf/lego/gaussian_pertimestamp`.
-
-`weight_visualization.ipynb`:
-
-visualize the weight of Multi-resolution HexPlane module.
-
-`merge_many_4dgs.py`:
-merge your trained 4dgs.
-usage:
-
-```python
-export exp_name="dynerf"
-python merge_many_4dgs.py --model_path output/$exp_name/sear_steak
-```
-
-`colmap.sh`:
-generate point clouds from input data
-
-```bash
-bash colmap.sh data/hypernerf/virg/vrig-chicken hypernerf 
-bash colmap.sh data/dynerf/sear_steak llff
-```
-
-**Blender** format seems doesn't work. Welcome to raise a pull request to fix it.
-
-`downsample_point.py` :downsample generated point clouds by sfm.
-
-```python
-python scripts/downsample_point.py data/dynerf/sear_steak/colmap/dense/workspace/fused.ply data/dynerf/sear_steak/points3D_downsample2.ply
-```
-
-In my paper, I always use `colmap.sh` to generate dense point clouds and downsample it to less than 40000 points.
-
-Here are some codes maybe useful but never adopted in my paper, you can also try it.
 
 ## Citation
 
 ```
-@inproceedings{huang2024,
+@inproceedings{huang2024g,
   author = {Zixiong, Huang and Qi, Chen and Libo, Sun and Yifan, Yang and Naizhou, Wang and Mingkui, Tan and Qi, Wu},
   title = {G-NeRF: Geometry-enhanced Novel View Synthesis from Single-View Images},
-  booktitle = {CVPR},
+  booktitle = {IEEE / CVF Computer Vision and Pattern Recognition Conference (CVPR)},
   year = {2024}
 }
 ```
