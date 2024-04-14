@@ -12,7 +12,7 @@ Zixiong Huang*, Qi Chen*, Libo Sun, Yifan Yang, Naizhou Wang, Mingkui Tan, Qi Wu
 
 ## Requirements
 
-* CUDA toolkit 11.3 or later.  (Why is a separate CUDA toolkit installation required?  We use the custom CUDA extensions from the StyleGAN3 repo. Please see [Troubleshooting](https://github.com/NVlabs/stylegan3/blob/main/docs/troubleshooting.md#why-is-cuda-toolkit-installation-necessary)).
+* CUDA toolkit 11.3 or later.
 * Python libraries: see [environment.yml](./eg3d/environment.yml) for exact library dependencies.  You can use the following commands with Miniconda3 to create and activate your Python environment:
   - `cd g_nerf`
   - `conda env create -f environment.yml`
