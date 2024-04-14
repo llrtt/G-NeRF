@@ -2,7 +2,13 @@
 Zixiong Huang*, Qi Chen*, Libo Sun, Yifan Yang, Naizhou Wang, Mingkui Tan, Qi Wu
 
 ![architecture](figure/overallarchitecture.png)
-### [Project Page](https://llrtt.github.io/G-NeRF-Demo/)| [arXiv Paper](https://arxiv.org/abs/2310.08528)
+### [Project Page](https://llrtt.github.io/G-NeRF-Demo/)| [arXiv Paper](https://arxiv.org/abs/2404.07474)
+
+## Updates / TODO List
+
+- ✅ [2024/04/15] Update inference code.
+
+- 🔲 We will release the data generation code and training code later.
 
 ## Requirements
 
@@ -29,56 +35,11 @@ python ./g_nerf/gen_videos.py \
 --video_out_path results
 ```
 
+## Synthetic Date Generation
+Coming Soon
 
 ## Training
-
-For training synthetic scenes such as `bouncingballs`, run
-
-```
-python train.py -s data/dnerf/bouncingballs --port 6017 --expname "dnerf/bouncingballs" --configs arguments/dnerf/bouncingballs.py 
-```
-
-For training dynerf scenes such as `cut_roasted_beef`, run
-```python
-# First, extract the frames of each video.
-python scripts/preprocess_dynerf.py --datadir data/dynerf/cut_roasted_beef
-# Second, generate point clouds from input data.
-bash colmap.sh data/dynerf/cut_roasted_beef llff
-# Third, downsample the point clouds generated in the second step.
-python scripts/downsample_point.py data/dynerf/cut_roasted_beef/colmap/dense/workspace/fused.ply data/dynerf/cut_roasted_beef/points3D_downsample2.ply
-# Finally, train.
-python train.py -s data/dynerf/cut_roasted_beef --port 6017 --expname "dynerf/cut_roasted_beef" --configs arguments/dynerf/cut_roasted_beef.py 
-```
-For training hypernerf scenes such as `virg/broom`, run
-```python
-# First, computing dense point clouds by COLMAP
-bash colmap.sh data/hypernerf/virg/broom2 hypernerf
-# Second, downsample the point clouds generated in the first step.
-python scripts/downsample_point.py data/hypernerf/virg/broom2/colmap/dense/workspace/fused.ply data/hypernerf/virg/broom2/points3D_downsample2.ply
-# Finally, train.
-python train.py -s  data/hypernerf/virg/broom2/ --port 6017 --expname "hypernerf/broom2" --configs arguments/hypernerf/broom2.py 
-```
-
-For your custom datasets, install nerfstudio and follow their colmap pipeline.
-
-```python
-pip install nerfstudio
-# computing camera poses by colmap pipeline
-ns-process-data images --data data/your-data --output-dir data/your-ns-data
-cp -r data/your-ns-data/images data/your-ns-data/colmap/images
-python train.py -s data/your-ns-data/colmap --port 6017 --expname "custom" --configs arguments/hypernerf/default.py 
-```
-You can customize your training config through the config files.
-
-## Evaluation
-
-You can just run the following script to evaluate the model.
-
-```
-python metrics.py --model_path "output/dnerf/bouncingballs/" 
-```
-
-
+Coming Soon
 
 ## Citation
 
