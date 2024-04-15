@@ -6,7 +6,7 @@ Zixiong Huang*, Qi Chen*, Libo Sun, Yifan Yang, Naizhou Wang, Mingkui Tan, Qi Wu
 
 ## Updates / TODO List
 
-- ✅ [2024/04/15] Update inference code.
+- ✅ [2024/04/15] Release inference code.
 
 - 🔲 We will release the data generation code and training code later.
 

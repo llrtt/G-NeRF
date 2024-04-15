@@ -152,15 +152,10 @@ def generate_talking_videos(
 
 
     for i in tqdm(range(0, frame_num)):
-        pitch_range = math.pi/4
-        yaw_range = math.pi/4
-        
-        pitch = 0.35 * np.cos(i / (frame_num-1) * 2 * math.pi) + math.pi/2
-        pitch = math.pi/2
-        # yaw [0.3*pi, 0.7*pi]
-        yaw = 3.14/2 + yaw_range * np.sin(2 * 3.14 * i / (frame_num-1))
-        # yaw = 0.55 * math.pi * i / (frame_num-1)
-        cam2world_pose_d = LookAtPoseSampler.sample(yaw, pitch, radius=G.rendering_kwargs['avg_camera_radius'], device=device)
+        pitch_range = 0.3
+        yaw_range = 0.7
+        cam2world_pose_d = LookAtPoseSampler.sample(3.14/2 + yaw_range * np.sin(2 * 3.14 * i / frame_num), 3.14/2 -0.05 + pitch_range * np.cos(2 * 3.14 * i / frame_num),\
+                                                   radius=G.rendering_kwargs['avg_camera_radius'], device=device)
         if dataset == 'shapenet':
             yaw_range = math.pi*2
             yaw = yaw_range * i / (frame_num -1)
